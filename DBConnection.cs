@@ -30,7 +30,7 @@ namespace FolderWatcher {
 
         public static void Close() {
             if (is_connected) {
-                conn.Close();
+                conn.Dispose();
             }
         }
     }

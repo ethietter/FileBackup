@@ -10,6 +10,7 @@ using Newtonsoft.Json;
 namespace FolderWatcher {
     class Setup {
 
+        List<RowInfo> rows_to_insert = new List<RowInfo>();
 
         public Setup() {
             InitDB();
@@ -43,11 +44,11 @@ namespace FolderWatcher {
                 if (Directory.Exists(item)) {
                     dirs.Enqueue(item);
                     DirectoryInfo d_info = new DirectoryInfo(item);
-                    addToTable(item, 0, d_info.LastWriteTimeUtc);
+                    AddRow(item, 0, d_info.LastWriteTimeUtc);
                 }
                 else if (File.Exists(item)) {
                     FileInfo f_info = new FileInfo(item);
-                    addToTable(item, f_info.Length, f_info.LastWriteTimeUtc);
+                    AddRow(item, f_info.Length, f_info.LastWriteTimeUtc);
                 }
                 else {
                     //File does not exist, so ignore it
@@ -62,7 +63,7 @@ namespace FolderWatcher {
                     if (!monitor_config.exclude.Contains(dir)) {
                         dirs.Enqueue(dir);
                         DirectoryInfo d_info = new DirectoryInfo(dir);
-                        addToTable(dir, 0, d_info.LastWriteTimeUtc);
+                        AddRow(dir, 0, d_info.LastWriteTimeUtc);
                     }
                 }
 
@@ -73,20 +74,57 @@ namespace FolderWatcher {
                         continue;
                     }
                     FileInfo f_info = new FileInfo(file);
-                    addToTable(file, f_info.Length, f_info.LastWriteTimeUtc);
+                    AddRow(file, f_info.Length, f_info.LastWriteTimeUtc);
+                }
+            }
+
+            AddAllRows();
+            
+        }
+
+        private void AddAllRows() {
+            var conn = DBConnection.GetConn();
+            using (var cmd = new SQLiteCommand(conn)) {
+                double rows_per_transaction = 100000;
+                for (int j = 0; j < Math.Ceiling(rows_to_insert.Count() / rows_per_transaction); j++) {
+                    using (var transaction = conn.BeginTransaction()) {
+                        for (int i = 0; i < rows_per_transaction; i++) {
+                            int index = j * (int) rows_per_transaction + i;
+                            if (index >= rows_to_insert.Count()) {
+                                break;
+                            }
+                            else {
+                                RowInfo curr_row = rows_to_insert[index];
+                                cmd.CommandText = "INSERT INTO `files` (`path`, `size`, `modified`) VALUES(@path, @size, @modified)";
+                                cmd.Parameters.Add(new SQLiteParameter("@path", curr_row.path));
+                                cmd.Parameters.Add(new SQLiteParameter("@size", curr_row.size));
+                                cmd.Parameters.Add(new SQLiteParameter("@modified", curr_row.modified));
+                                cmd.ExecuteNonQuery();
+                            }
+                        }
+                        transaction.Commit();
+                    }
                 }
             }
         }
 
-        private void addToTable(string path, Int64 size, DateTime modified) {
-            int modified_int = (Int32)(modified.Subtract(new DateTime(1970, 1, 1)).TotalSeconds);
-            string query = "INSERT INTO `files` (`path`, `size`, `modified`) VALUES(@path, @size, @modified)";
-            SQLiteCommand cmd = new SQLiteCommand(query, DBConnection.GetConn());
-            cmd.Parameters.Add(new SQLiteParameter("@path", path));
-            cmd.Parameters.Add(new SQLiteParameter("@size", size));
-            cmd.Parameters.Add(new SQLiteParameter("@modified", modified_int));
-            cmd.ExecuteNonQuery();
+        private void AddRow(string path, long size, DateTime modified) {
+            int modified_int = (int)(modified.Subtract(new DateTime(1970, 1, 1)).TotalSeconds);
+            rows_to_insert.Add(new RowInfo(path, size, modified_int));
             //Console.WriteLine(path);// + ": Size=" + size + ", modified=" + modified);
+        }
+
+        private class RowInfo {
+
+            public string path;
+            public long size;
+            public int modified;
+            public RowInfo(string path, long size, int modified) {
+                this.path = path;
+                this.size = size;
+                this.modified = modified;
+            }
+
         }
     }
 }
