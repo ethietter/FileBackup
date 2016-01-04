@@ -21,63 +21,60 @@ namespace FolderWatcher {
             SQLiteConnection conn = DBConnection.GetConn();
 
             //Create table if it doesn't exist
-            string query = "CREATE TABLE IF NOT EXISTS 'files' ('id' INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, 'path' TEXT, 'size' INTEGER, 'modified' INTEGER)";
+            string query = "DROP TABLE IF EXISTS `files`";
             SQLiteCommand cmd = new SQLiteCommand(query, conn);
+            cmd.ExecuteNonQuery();
+
+            query = "CREATE TABLE IF NOT EXISTS 'files' ('id' INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, 'path' TEXT, 'size' INTEGER, 'modified' INTEGER)";
+            cmd = new SQLiteCommand(query, conn);
             cmd.ExecuteNonQuery();
 
         }
 
         private void ScanFileSystem() {
-            try {
-                StreamReader sr = new StreamReader(Config.data_dir + "\\monitor-config.json");
-                String contents = sr.ReadToEnd();
-                sr.Close();
-                MonitorConfig monitor_config = JsonConvert.DeserializeObject<MonitorConfig>(contents);
+            MonitorConfig monitor_config = Config.GetMonitorConfig();
 
-                Queue<String> dirs = new Queue<String>();
-                foreach (var item in monitor_config.include) {
-                    //If the item is on the exclude list, ignore it and all subdirectories
-                    if (monitor_config.exclude.Contains(item)) {
-                        continue;
-                    }
-                    if (Directory.Exists(item)) {
-                        dirs.Enqueue(item);
-                    }
-                    else if (File.Exists(item)) {
-                        FileInfo f_info = new FileInfo(item);
-                        addToTable(item, f_info.Length, f_info.LastWriteTimeUtc);
-                    }
-                    else {
-                        //File does not exist, so ignore it
-                    }
+            Queue<String> dirs = new Queue<String>();
+            foreach (var item in monitor_config.include) {
+                //If the item is on the exclude list, ignore it and all subdirectories
+                if (monitor_config.exclude.Contains(item)) {
+                    continue;
                 }
-
-                while (dirs.Count() > 0) {
-                    string parent_dir = dirs.Dequeue();
-                    List<string> subdirs = new List<string>(Directory.EnumerateDirectories(parent_dir));
-                    foreach(string dir in subdirs) {
-                        //If the directory is on the exclude list, ignore it and all subdirectories
-                        if (monitor_config.exclude.Contains(dir)) {
-                            continue;
-                        }
-                        dirs.Enqueue(dir);
-                    }
-
-                    List<string> files = new List<string>(Directory.EnumerateFiles(parent_dir));
-                    foreach(string file in files) {
-                        //If the file is on the exclude list, ignore it
-                        if (monitor_config.exclude.Contains(file)) {
-                            continue;
-                        }
-                        FileInfo f_info = new FileInfo(file);
-                        addToTable(file, f_info.Length, f_info.LastWriteTimeUtc);
-                    }
+                if (Directory.Exists(item)) {
+                    dirs.Enqueue(item);
+                    DirectoryInfo d_info = new DirectoryInfo(item);
+                    addToTable(item, 0, d_info.LastWriteTimeUtc);
+                }
+                else if (File.Exists(item)) {
+                    FileInfo f_info = new FileInfo(item);
+                    addToTable(item, f_info.Length, f_info.LastWriteTimeUtc);
+                }
+                else {
+                    //File does not exist, so ignore it
                 }
             }
 
-            catch (Exception e) {
-                Console.WriteLine("The config file could not be read");
-                Console.WriteLine(e.Message);
+            while (dirs.Count() > 0) {
+                string parent_dir = dirs.Dequeue();
+                List<string> subdirs = new List<string>(Directory.EnumerateDirectories(parent_dir));
+                foreach(string dir in subdirs) {
+                    //If the directory is on the exclude list, ignore it and all subdirectories
+                    if (!monitor_config.exclude.Contains(dir)) {
+                        dirs.Enqueue(dir);
+                        DirectoryInfo d_info = new DirectoryInfo(dir);
+                        addToTable(dir, 0, d_info.LastWriteTimeUtc);
+                    }
+                }
+
+                List<string> files = new List<string>(Directory.EnumerateFiles(parent_dir));
+                foreach(string file in files) {
+                    //If the file is on the exclude list, ignore it
+                    if (monitor_config.exclude.Contains(file)) {
+                        continue;
+                    }
+                    FileInfo f_info = new FileInfo(file);
+                    addToTable(file, f_info.Length, f_info.LastWriteTimeUtc);
+                }
             }
         }
 
