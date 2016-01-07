@@ -14,19 +14,26 @@ namespace FolderWatcher {
 
         public Setup() {
             InitDB();
-            ScanFileSystem();
+            //ScanFileSystem();
         }
 
         private void InitDB() {
 
             SQLiteConnection conn = DBConnection.GetConn();
 
-            //Create table if it doesn't exist
-            string query = "DROP TABLE IF EXISTS `files`";
+            string query = "DROP TABLE IF EXISTS `directories`";
             SQLiteCommand cmd = new SQLiteCommand(query, conn);
             cmd.ExecuteNonQuery();
 
-            query = "CREATE TABLE IF NOT EXISTS 'files' ('id' INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, 'path' TEXT, 'size' INTEGER, 'modified' INTEGER)";
+            query = "DROP TABLE IF EXISTS `files`";
+            cmd = new SQLiteCommand(query, conn);
+            cmd.ExecuteNonQuery();
+
+            query = "CREATE TABLE `files` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `dir_id` INTEGER, `name` TEXT, `size` INTEGER, `modified` INTEGER)";
+            cmd = new SQLiteCommand(query, conn);
+            cmd.ExecuteNonQuery();
+
+            query = "CREATE TABLE `directories` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `path` TEXT, `modified` INTEGER)";
             cmd = new SQLiteCommand(query, conn);
             cmd.ExecuteNonQuery();
 
@@ -35,26 +42,27 @@ namespace FolderWatcher {
         private void ScanFileSystem() {
             MonitorConfig monitor_config = Config.GetMonitorConfig();
 
-            Queue<String> dirs = new Queue<String>();
+            List<String> dirs = new List<String>();
             foreach (var item in monitor_config.include) {
                 //If the item is on the exclude list, ignore it and all subdirectories
                 if (monitor_config.exclude.Contains(item)) {
                     continue;
                 }
                 if (Directory.Exists(item)) {
-                    dirs.Enqueue(item);
+                    dirs.Add(item);
                     DirectoryInfo d_info = new DirectoryInfo(item);
-                    AddRow(item, 0, d_info.LastWriteTimeUtc);
-                }
-                else if (File.Exists(item)) {
-                    FileInfo f_info = new FileInfo(item);
-                    AddRow(item, f_info.Length, f_info.LastWriteTimeUtc);
+                    //AddRow(item, 0, d_info.LastWriteTimeUtc);
                 }
                 else {
-                    //File does not exist, so ignore it
+                    //Directory does not exist, so ignore it
                 }
             }
 
+            foreach(var dir in dirs) {
+                AddDirToTable(dir);
+            }
+
+            /*
             while (dirs.Count() > 0) {
                 string parent_dir = dirs.Dequeue();
                 List<string> subdirs = new List<string>(Directory.EnumerateDirectories(parent_dir));
@@ -77,9 +85,40 @@ namespace FolderWatcher {
                     AddRow(file, f_info.Length, f_info.LastWriteTimeUtc);
                 }
             }
+            */
 
             AddAllRows();
             
+        }
+
+        private void AddDirToTable(string dir_path) {
+            MonitorConfig monitor_config = Config.GetMonitorConfig();
+            List<string> files = new List<string>(Directory.EnumerateFiles(dir_path));
+            int dir_id = AddDirRow(dir_path);
+            foreach(string file in files) {
+                //If the file is on the exclude list, ignore it
+                if (monitor_config.exclude.Contains(file)) {
+                    continue;
+                }
+                FileInfo f_info = new FileInfo(file);
+                AddFileRow(f_info.Name, f_info.Length, f_info.LastAccessTimeUtc, dir_id);
+            }
+
+            List<string> subdirs = new List<string>(Directory.EnumerateDirectories(dir_path));
+            foreach(string dir in subdirs) {
+                if (!monitor_config.exclude.Contains(dir)) {
+                    AddDirToTable(dir);
+                }
+            }
+        }
+
+        private void AddFileRow(string filename, long length, DateTime modified, int parent_id) {
+            //Add the file to a list of files to later be added to the database in a batch
+        }
+
+        private int AddDirRow(string dir_path) {
+            //Add the directory to a list of directories, save a dir_id, and return that value
+            return 0;
         }
 
         private void AddAllRows() {
