@@ -10,11 +10,13 @@ using Newtonsoft.Json;
 namespace FolderWatcher {
     class Setup {
 
-        List<RowInfo> rows_to_insert = new List<RowInfo>();
+        List<DirRowInfo> dirs_to_insert = new List<DirRowInfo>();
+        List<FileRowInfo> files_to_insert = new List<FileRowInfo>();
+        int next_dir_id;
 
         public Setup() {
             InitDB();
-            //ScanFileSystem();
+            ScanFileSystem();
         }
 
         private void InitDB() {
@@ -40,6 +42,7 @@ namespace FolderWatcher {
         }
 
         private void ScanFileSystem() {
+            next_dir_id = 1;
             MonitorConfig monitor_config = Config.GetMonitorConfig();
 
             List<String> dirs = new List<String>();
@@ -50,8 +53,6 @@ namespace FolderWatcher {
                 }
                 if (Directory.Exists(item)) {
                     dirs.Add(item);
-                    DirectoryInfo d_info = new DirectoryInfo(item);
-                    //AddRow(item, 0, d_info.LastWriteTimeUtc);
                 }
                 else {
                     //Directory does not exist, so ignore it
@@ -59,111 +60,141 @@ namespace FolderWatcher {
             }
 
             foreach(var dir in dirs) {
-                AddDirToTable(dir);
+                AddDirRecursive(dir);
             }
-
-            /*
-            while (dirs.Count() > 0) {
-                string parent_dir = dirs.Dequeue();
-                List<string> subdirs = new List<string>(Directory.EnumerateDirectories(parent_dir));
-                foreach(string dir in subdirs) {
-                    //If the directory is on the exclude list, ignore it and all subdirectories
-                    if (!monitor_config.exclude.Contains(dir)) {
-                        dirs.Enqueue(dir);
-                        DirectoryInfo d_info = new DirectoryInfo(dir);
-                        AddRow(dir, 0, d_info.LastWriteTimeUtc);
-                    }
-                }
-
-                List<string> files = new List<string>(Directory.EnumerateFiles(parent_dir));
-                foreach(string file in files) {
-                    //If the file is on the exclude list, ignore it
-                    if (monitor_config.exclude.Contains(file)) {
-                        continue;
-                    }
-                    FileInfo f_info = new FileInfo(file);
-                    AddRow(file, f_info.Length, f_info.LastWriteTimeUtc);
-                }
-            }
-            */
 
             AddAllRows();
             
         }
 
-        private void AddDirToTable(string dir_path) {
+        private void AddDirRecursive(string dir_path) {
             MonitorConfig monitor_config = Config.GetMonitorConfig();
             List<string> files = new List<string>(Directory.EnumerateFiles(dir_path));
-            int dir_id = AddDirRow(dir_path);
+            int dir_id = SaveDirRow(dir_path);
             foreach(string file in files) {
                 //If the file is on the exclude list, ignore it
                 if (monitor_config.exclude.Contains(file)) {
                     continue;
                 }
                 FileInfo f_info = new FileInfo(file);
-                AddFileRow(f_info.Name, f_info.Length, f_info.LastAccessTimeUtc, dir_id);
+                SaveFileRow(f_info.FullName, f_info.Name, f_info.Length, f_info.LastAccessTimeUtc, dir_id);
             }
 
             List<string> subdirs = new List<string>(Directory.EnumerateDirectories(dir_path));
             foreach(string dir in subdirs) {
                 if (!monitor_config.exclude.Contains(dir)) {
-                    AddDirToTable(dir);
+                    AddDirRecursive(dir);
                 }
             }
         }
 
-        private void AddFileRow(string filename, long length, DateTime modified, int parent_id) {
-            //Add the file to a list of files to later be added to the database in a batch
+        private void SaveFileRow(string fullpath, string filename, long length, DateTime modified, int parent_id) {
+            FileRowInfo row_info = new FileRowInfo();
+            FileInfo f_info = new FileInfo(fullpath);
+            row_info.dir_id = parent_id;
+            row_info.name = filename;
+            row_info.size = length;
+            row_info.modified = modified;
+
+            files_to_insert.Add(row_info);
         }
 
-        private int AddDirRow(string dir_path) {
-            //Add the directory to a list of directories, save a dir_id, and return that value
-            return 0;
+        private int SaveDirRow(string dir_path) {
+            DirRowInfo row_info = new DirRowInfo();
+            DirectoryInfo d_info = new DirectoryInfo(dir_path);
+            row_info.id = next_dir_id;
+            row_info.path = dir_path;
+            row_info.modified = d_info.LastAccessTimeUtc;
+
+            dirs_to_insert.Add(row_info);
+
+            next_dir_id++;
+            return row_info.id;
         }
 
         private void AddAllRows() {
             var conn = DBConnection.GetConn();
+            int rows_per_transaction = 100000;
+            for(int j = 0; j < Math.Ceiling(dirs_to_insert.Count()/(double)rows_per_transaction); j++) {
+                int start = j * rows_per_transaction;
+                int end = start + rows_per_transaction;
+                BatchAddDirs(conn, start, end);
+            }
+
+            for(int j = 0; j < Math.Ceiling(files_to_insert.Count()/(double)rows_per_transaction); j++) {
+                int start = j * rows_per_transaction;
+                int end = start + rows_per_transaction;
+                BatchAddFiles(conn, start, end);
+            }
+        }
+
+        /// <summary>
+        ///     
+        /// </summary>
+        /// <param name="conn">SQLiteConnection used to execute these queries</param>
+        /// <param name="dir_rows"></param>
+        /// <param name="start">Start index, inclusive</param>
+        /// <param name="end">End index, exclusive</param>
+        private void BatchAddDirs(SQLiteConnection conn, int start, int end) {
             using (var cmd = new SQLiteCommand(conn)) {
-                double rows_per_transaction = 100000;
-                for (int j = 0; j < Math.Ceiling(rows_to_insert.Count() / rows_per_transaction); j++) {
-                    using (var transaction = conn.BeginTransaction()) {
-                        for (int i = 0; i < rows_per_transaction; i++) {
-                            int index = j * (int) rows_per_transaction + i;
-                            if (index >= rows_to_insert.Count()) {
-                                break;
-                            }
-                            else {
-                                RowInfo curr_row = rows_to_insert[index];
-                                cmd.CommandText = "INSERT INTO `files` (`path`, `size`, `modified`) VALUES(@path, @size, @modified)";
-                                cmd.Parameters.Add(new SQLiteParameter("@path", curr_row.path));
-                                cmd.Parameters.Add(new SQLiteParameter("@size", curr_row.size));
-                                cmd.Parameters.Add(new SQLiteParameter("@modified", curr_row.modified));
-                                cmd.ExecuteNonQuery();
-                            }
+                using(var transaction = conn.BeginTransaction()) {
+                    for(int i = start; i < end; i++) {
+                        if(i >= dirs_to_insert.Count()) {
+                            break; //Index out of bounds
                         }
-                        transaction.Commit();
+                        DirRowInfo curr_row = dirs_to_insert[i];
+                        cmd.CommandText = "INSERT INTO `directories` (`id`, `path`, `modified`) VALUES(@id, @path, @modified)";
+                        cmd.Parameters.Add(new SQLiteParameter("@id", curr_row.id));
+                        cmd.Parameters.Add(new SQLiteParameter("@path", curr_row.path));
+                        cmd.Parameters.Add(new SQLiteParameter("@modified", DateTimeToInt(curr_row.modified)));
+                        cmd.ExecuteNonQuery();
                     }
+                    transaction.Commit();
                 }
             }
         }
 
-        private void AddRow(string path, long size, DateTime modified) {
-            int modified_int = (int)(modified.Subtract(new DateTime(1970, 1, 1)).TotalSeconds);
-            rows_to_insert.Add(new RowInfo(path, size, modified_int));
-            //Console.WriteLine(path);// + ": Size=" + size + ", modified=" + modified);
+        private void BatchAddFiles(SQLiteConnection conn, int start, int end) {
+            using (var cmd = new SQLiteCommand(conn)) {
+                using (var transaction = conn.BeginTransaction()) {
+                    for(int i = start; i < end; i++) {
+                        if(i >= files_to_insert.Count()) {
+                            break; //Index out of bounds
+                        }
+                        FileRowInfo curr_row = files_to_insert[i];
+                        cmd.CommandText = "INSERT INTO `files` (`dir_id`, `name`, `size`, `modified`) VALUES(@dir_id, @name, @size, @modified)";
+                        cmd.Parameters.Add(new SQLiteParameter("@dir_id", curr_row.dir_id));
+                        cmd.Parameters.Add(new SQLiteParameter("@name", curr_row.name));
+                        cmd.Parameters.Add(new SQLiteParameter("@size", curr_row.size));
+                        cmd.Parameters.Add(new SQLiteParameter("@modified", DateTimeToInt(curr_row.modified)));
+                        cmd.ExecuteNonQuery();
+                        
+                    }
+                    transaction.Commit();
+                }
+            }
         }
 
-        private class RowInfo {
+        private int DateTimeToInt(DateTime dt) {
+            return (int)(dt.Subtract(new DateTime(1970, 1, 1)).TotalSeconds);
+        }
+
+        private class DirRowInfo {
 
             public string path;
-            public long size;
-            public int modified;
-            public RowInfo(string path, long size, int modified) {
-                this.path = path;
-                this.size = size;
-                this.modified = modified;
-            }
+            public int id;
+            public DateTime modified;
 
         }
+
+        private class FileRowInfo {
+
+            public string name;
+            public int dir_id;
+            public long size;
+            public DateTime modified;
+
+        }
+
     }
 }
